@@ -7,6 +7,10 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import mongoose from 'mongoose';
 import MedicalReport from './MedicalReport.js';
+import bodyParser from 'body-parser';
+import Groq from 'groq-sdk';
+
+// Initialize Groq client
 
 
 // ES Module setup
@@ -20,11 +24,19 @@ const PORT = process.env.PORT || 5000;
 
 // MongoDB Connection
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/vivitsu_health';
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY
+});
 
 mongoose.connect(MONGODB_URI)
   .then(() => console.log('✅ MongoDB Connected Successfully'))
   .catch((err) => console.error('❌ MongoDB Connection Error:', err));
-
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ 
+  limit: '50mb', 
+  extended: true, 
+  parameterLimit: 50000 
+}));
 // Middleware
 app.use(cors({
   origin: '*', // Allow all origins in development
@@ -99,6 +111,50 @@ async function analyzeMedicalReport(extractedText) {
   });
 }
 
+const healthDataSchema = new mongoose.Schema({
+  bpm: {
+    type: Number,
+    required: true
+  },
+  spo2: {
+    type: Number,
+    required: true
+  },
+  timestamp: {
+    type: Date,
+    default: Date.now
+  }
+}, {
+  timestamps: true  // Adds createdAt and updatedAt automatically
+});
+
+const HealthData = mongoose.model('HealthData', healthDataSchema);
+
+// API Endpoint to receive data from ESP32
+app.post('/data', async (req, res) => {
+  try {
+    const { bpm, spo2 } = req.body;
+    
+    const newData = new HealthData({
+      bpm: bpm,
+      spo2: spo2
+    });
+    
+    await newData.save();
+    res.status(200).json({ message: 'Data saved successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error saving data' });
+  }
+});
+
+app.get('/data', async (req, res) => {
+  try {
+    const data = await HealthData.find().sort({ timestamp: -1 }).limit(50);
+    res.status(200).json(data);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch data' });
+  }
+});
 // Medical Analysis Endpoint with MongoDB Save
 app.post('/api/medical/analyze', async (req, res) => {
   console.log('\n🔵 === NEW MEDICAL ANALYSIS REQUEST ===');
@@ -316,19 +372,12 @@ app.get('/', (req, res) => {
 });
 
 
-const getAI = () => new GoogleGenAI({ 
-  apiKey: import.meta.env.VITE_GEMINI_API_KEY || '' 
-});
 
-// Gemini Chat Endpoint
+
+
 app.post('/api/chat/message', async (req, res) => {
   try {
     const { messages, medicalReports } = req.body;
-    
-    // Import Gemini (install: npm install @google/generative-ai)
-    const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
     
     // Build context
     let context = "PATIENT'S MEDICAL HISTORY:\n\n";
@@ -344,35 +393,40 @@ ${context}
 
 Provide helpful, accurate health advice. Always end with: "⚠️ This is AI-generated advice. Consult a healthcare professional."`;
     
-    // Combine system prompt with user message
-    const lastMessage = messages[messages.length - 1].text;
-    const fullPrompt = systemPrompt + "\n\nUser: " + lastMessage;
+    // Prepare messages for Groq
+    const chatMessages = [
+      { role: 'system', content: systemPrompt },
+      ...messages.map(m => ({ 
+        role: m.role === 'model' ? 'assistant' : m.role, 
+        content: m.text 
+      }))
+    ];
     
-    const result = await model.generateContent(fullPrompt);
-    const response = result.response.text();
-    
-    res.json({ 
-      success: true, 
-      response 
+    // Call Groq API
+    const chatCompletion = await groq.chat.completions.create({
+      messages: chatMessages,
+      model: 'llama-3.3-70b-versatile', // Fast, accurate medical model
+      temperature: 0.7,
+      max_tokens: 1024
     });
+    
+    const response = chatCompletion.choices[0]?.message?.content || 
+                    "I'm sorry, I couldn't process that.";
+    
+    res.json({ success: true, response });
     
   } catch (error) {
     console.error('Chat API Error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
+
+
 
 // Diet Plan Endpoint
 app.post('/api/chat/diet-plan', async (req, res) => {
   try {
     const { goal, medicalReports } = req.body;
-    
-    const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
     
     let context = "";
     if (medicalReports && medicalReports.length > 0) {
@@ -394,8 +448,27 @@ Include:
 
 Format with clear headings. End with disclaimer.`;
     
-    const result = await model.generateContent(prompt);
-    const response = result.response.text();
+    // Groq API call
+    const chatCompletion = await groq.chat.completions.create({
+      messages: [
+        { 
+          role: 'system', 
+          content: 'You are a certified nutritionist and medical diet expert. Create detailed, safe, and personalized meal plans based on patient medical history.' 
+        },
+        { 
+          role: 'user', 
+          content: prompt 
+        }
+      ],
+      model: 'llama-3.3-70b-versatile',
+      temperature: 0.7,
+      max_tokens: 2048,
+      top_p: 1,
+      stream: false
+    });
+    
+    const response = chatCompletion.choices[0]?.message?.content || 
+                    "Failed to generate diet plan. Please try again.";
     
     res.json({ 
       success: true, 
@@ -411,6 +484,8 @@ Format with clear headings. End with disclaimer.`;
   }
 });
 
+
+
 // Health Insights Endpoint
 app.post('/api/chat/insights', async (req, res) => {
   try {
@@ -422,10 +497,6 @@ app.post('/api/chat/insights', async (req, res) => {
         response: "No medical reports available for analysis." 
       });
     }
-    
-    const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
     
     let context = "Patient's Medical Reports:\n\n";
     medicalReports.forEach((report, i) => {
@@ -444,8 +515,27 @@ Analyze the patient's medical history and provide:
 
 Be specific and reference findings from reports. End with disclaimer.`;
     
-    const result = await model.generateContent(prompt);
-    const response = result.response.text();
+    // Groq API call
+    const chatCompletion = await groq.chat.completions.create({
+      messages: [
+        { 
+          role: 'system', 
+          content: 'You are a senior medical analyst and clinical advisor. Analyze patient medical history, identify patterns, assess risks, and provide evidence-based health insights and recommendations.' 
+        },
+        { 
+          role: 'user', 
+          content: prompt 
+        }
+      ],
+      model: 'llama-3.3-70b-versatile',
+      temperature: 0.6,
+      max_tokens: 2048,
+      top_p: 1,
+      stream: false
+    });
+    
+    const response = chatCompletion.choices[0]?.message?.content || 
+                    "Failed to generate health insights. Please try again.";
     
     res.json({ 
       success: true, 
@@ -461,12 +551,15 @@ Be specific and reference findings from reports. End with disclaimer.`;
   }
 });
 
+
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 Server running on http://localhost:${PORT}`);
+  console.log(`📡 ESP32 can access at: http://172.20.10.2:${PORT}`);
   console.log(`🤖 AI Model: Local Hugging Face (Unlimited)`);
   console.log(`💾 Database: MongoDB`);
-  console.log(`🏥 Medical Analysis: http://localhost:${PORT}/api/medical/analyze\n`);
+  console.log(`🏥 Medical Analysis: http://localhost:${PORT}/api/medical/analyze`);
+  console.log(`📊 ESP32 Data Endpoint: http://172.20.10.2:${PORT}/data\n`);
   
   // Check Python availability
   import('child_process').then(({ exec }) => {
@@ -479,3 +572,4 @@ app.listen(PORT, () => {
     });
   });
 });
+

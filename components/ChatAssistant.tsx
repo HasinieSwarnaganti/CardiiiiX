@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Loader2, Info, FileText, Utensils, Sparkles } from 'lucide-react';
-import { geminiService } from '../services/geminiService';
+import { groqService } from '../services/groqService';
 import { Message } from '../types';
+
 
 const ChatAssistant: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([
     { 
       role: 'model', 
-      text: "Hello! I'm Vivitsu, your AI health assistant with access to your medical history. I can help you with:\n\n• Symptom analysis based on your reports\n• Personalized diet plans\n• Health insights and recommendations\n• General health questions\n\nHow can I assist you today?", 
+      text: "Hello! I'm Vivitsu, your AI health assistant powered by Groq's lightning-fast AI. I can help you with:\n\n• Symptom analysis based on your reports\n• Personalized diet plans\n• Health insights and recommendations\n• General health questions\n\nHow can I assist you today?", 
       timestamp: new Date() 
     }
   ]);
@@ -17,10 +18,12 @@ const ChatAssistant: React.FC = () => {
   const [reportsLoaded, setReportsLoaded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+
   // Load medical reports on mount
   useEffect(() => {
     loadMedicalReports();
   }, []);
+
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -28,9 +31,10 @@ const ChatAssistant: React.FC = () => {
     }
   }, [messages, isLoading]);
 
+
   const loadMedicalReports = async () => {
     try {
-      const reports = await geminiService.fetchMedicalReports();
+      const reports = await groqService.fetchMedicalReports();
       setMedicalReports(reports);
       setReportsLoaded(true);
       console.log(`✅ Loaded ${reports.length} medical reports for AI context`);
@@ -40,8 +44,10 @@ const ChatAssistant: React.FC = () => {
     }
   };
 
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
+
 
     const userMessage: Message = { role: 'user', text: input, timestamp: new Date() };
     setMessages(prev => [...prev, userMessage]);
@@ -49,13 +55,14 @@ const ChatAssistant: React.FC = () => {
     setInput('');
     setIsLoading(true);
 
+
     try {
       // Build chat history
       const chatHistory = messages.map(m => ({ role: m.role, text: m.text }));
       chatHistory.push({ role: 'user', text: userInput });
       
-      // Call enhanced AI with medical context
-      const response = await geminiService.chatWithContext(chatHistory, medicalReports);
+      // Call Groq AI with medical context
+      const response = await groqService.chatWithContext(chatHistory, medicalReports);
       
       const botMessage: Message = { 
         role: 'model', 
@@ -67,7 +74,7 @@ const ChatAssistant: React.FC = () => {
       console.error("Chat Error:", error);
       setMessages(prev => [...prev, { 
         role: 'model', 
-        text: "An error occurred. Please check your Gemini API key and connection.", 
+        text: "An error occurred. Please check your Groq API key and connection.", 
         timestamp: new Date() 
       }]);
     } finally {
@@ -75,8 +82,10 @@ const ChatAssistant: React.FC = () => {
     }
   };
 
+
   const generateDietPlan = async () => {
     if (isLoading) return;
+
 
     const userMessage: Message = { 
       role: 'user', 
@@ -86,8 +95,9 @@ const ChatAssistant: React.FC = () => {
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
 
+
     try {
-      const response = await geminiService.generateDietPlan(
+      const response = await groqService.generateDietPlan(
         "General health and wellness considering medical conditions",
         medicalReports
       );
@@ -110,8 +120,10 @@ const ChatAssistant: React.FC = () => {
     }
   };
 
+
   const getHealthInsights = async () => {
     if (isLoading || medicalReports.length === 0) return;
+
 
     const userMessage: Message = { 
       role: 'user', 
@@ -121,8 +133,9 @@ const ChatAssistant: React.FC = () => {
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
 
+
     try {
-      const response = await geminiService.getHealthInsights(medicalReports);
+      const response = await groqService.getHealthInsights(medicalReports);
       
       const botMessage: Message = { 
         role: 'model', 
@@ -142,6 +155,7 @@ const ChatAssistant: React.FC = () => {
     }
   };
 
+
   return (
     <div className="flex flex-col h-full bg-white max-w-4xl mx-auto shadow-sm border-x border-slate-200">
       {/* Header Info */}
@@ -149,7 +163,7 @@ const ChatAssistant: React.FC = () => {
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
           <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">
-            Clinical Mode Active • {medicalReports.length} Reports Loaded
+            Groq AI Active • {medicalReports.length} Reports Loaded
           </span>
         </div>
         <div className="flex items-center gap-2 text-[10px] text-slate-400 font-bold italic">
@@ -157,6 +171,7 @@ const ChatAssistant: React.FC = () => {
           Emergency? Call 911 immediately.
         </div>
       </div>
+
 
       {/* Quick Actions */}
       {reportsLoaded && (
@@ -183,6 +198,7 @@ const ChatAssistant: React.FC = () => {
           </div>
         </div>
       )}
+
 
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -216,11 +232,12 @@ const ChatAssistant: React.FC = () => {
             </div>
             <div className="bg-slate-50 rounded-[1.5rem] p-5 border border-slate-200 rounded-tl-none flex items-center gap-3">
               <Loader2 size={16} className="animate-spin text-blue-600" />
-              <span className="text-sm text-slate-500 font-black uppercase tracking-widest text-[10px]">Analyzing with medical context...</span>
+              <span className="text-sm text-slate-500 font-black uppercase tracking-widest text-[10px]">Groq AI analyzing...</span>
             </div>
           </div>
         )}
       </div>
+
 
       {/* Input Area */}
       <div className="p-8 border-t border-slate-200 bg-white">
@@ -249,5 +266,6 @@ const ChatAssistant: React.FC = () => {
     </div>
   );
 };
+
 
 export default ChatAssistant;

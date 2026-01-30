@@ -1,36 +1,147 @@
-
 import React, { useEffect, useState } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Droplets, Activity, Zap, Wind, ArrowUpRight, ArrowDownRight, Clock, ShieldCheck, WifiOff, AlertCircle, Terminal, Info, Cpu, Eye, Upload, Loader } from 'lucide-react';
 import { localServices, ServiceStatus } from '../services/localServices';
-import { geminiService } from '../services/geminiService';
+import supabase from './supabaseClient.js';
 
-interface DashboardProps {
-  simulationMode?: boolean;
+
+interface HealthData {
+  id?: number;
+  bpm: number;
+  spo2: number;
+  created_at: string;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ simulationMode = false }) => {
+
+const Dashboard: React.FC = ( ) => {
   const [history, setHistory] = useState<any[]>([]);
   const [backendStatus, setBackendStatus] = useState<ServiceStatus | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [eyeImage, setEyeImage] = useState<File | null>(null);
   const [eyeAnalysis, setEyeAnalysis] = useState<string>('');
   const [analyzing, setAnalyzing] = useState(false);
+  
+  // Real-time health data from Supabase
+  const [latestHealthData, setLatestHealthData] = useState<HealthData | null>(null);
+  const [healthHistory, setHealthHistory] = useState<HealthData[]>([]);
+  const [supabaseConnected, setSupabaseConnected] = useState(false);
+
+
+  // Fetch initial health data from Supabase
+  useEffect(() => {
+    const fetchInitialHealthData = async () => {
+      console.log('=== STARTING DATA FETCH ===');
+      
+      try {
+        // Fetch latest reading
+        console.log('Fetching latest reading...');
+        const { data: latestData, error: latestError } = await supabase
+          .from('health_readings')
+          .select('bpm, spo2, created_at')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single();
+
+
+        if (latestError) {
+          console.error('❌ Error fetching latest:', latestError);
+        }
+
+
+        if (latestData) {
+          console.log('✅ Setting latest health data:', latestData);
+          setLatestHealthData(latestData);
+          setSupabaseConnected(true);
+        }
+
+
+        // Fetch history
+        console.log('Fetching history...');
+        const { data: historyData, error: historyError } = await supabase
+          .from('health_readings')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(20);
+
+
+        if (historyError) {
+          console.error('❌ Error fetching history:', historyError);
+        }
+
+
+        if (historyData) {
+          console.log('✅ Setting health history, records:', historyData.length);
+          setHealthHistory(historyData.reverse());
+        }
+      } catch (error) {
+        console.error('💥 Caught exception:', error);
+        setSupabaseConnected(false);
+      }
+    };
+
+
+    fetchInitialHealthData();
+  }, []);
+
+
+  // Setup realtime subscription
+  useEffect(() => {
+    console.log('=== SETTING UP REALTIME SUBSCRIPTION ===');
+    
+    const channel = supabase
+      .channel('health_readings_realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'health_readings'
+        },
+        (payload) => {
+          console.log('🎉 REALTIME EVENT RECEIVED!', payload);
+          setLatestHealthData(payload.new as HealthData);
+          setHealthHistory((prev) => [...prev, payload.new as HealthData].slice(-20));
+          setSupabaseConnected(true);
+        }
+      )
+      .subscribe((status, err) => {
+        console.log('📡 Subscription status:', status);
+        if (err) console.error('❌ Subscription error:', err);
+        if (status === 'SUBSCRIBED') {
+          console.log('✅ Successfully subscribed to realtime updates!');
+        }
+      });
+
+
+    return () => {
+      console.log('🔌 Cleaning up subscription');
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
 
   useEffect(() => {
     const loadData = async () => {
-      const { backend } = await localServices.checkHealth(simulationMode);
+      const { backend } = await localServices.checkHealth();
       setBackendStatus(backend);
-      const data = await localServices.getScanHistory(simulationMode);
+      const data = await localServices.getScanHistory();
       setHistory(data);
     };
     loadData();
-  }, [simulationMode]);
+  }, []);
 
-  const chartData = history.length > 0 
-    ? history.map(h => ({ 
-        time: new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), 
-        heartRate: h.heartRate 
+
+  // Prepare chart data - prioritize Supabase data if available
+  const chartData = healthHistory.length > 0
+    ? healthHistory.map(h => ({
+        time: new Date(h.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        heartRate: h.bpm,
+        oxygen: h.spo2
+      }))
+    : history.length > 0
+    ? history.map(h => ({
+        time: new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        heartRate: h.heartRate
       }))
     : [
         { time: '08:00', heartRate: 72 },
@@ -39,57 +150,58 @@ const Dashboard: React.FC<DashboardProps> = ({ simulationMode = false }) => {
         { time: '14:00', heartRate: 92 },
       ];
 
+
   const latest = history[history.length - 1];
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5004';
-  const handleEyeAnalysis = async () => {
-  if (!eyeImage) return;
-  setAnalyzing(true);
+
+  const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5004';
   
-  try {
-    // Create FormData object to send file
-    const formData = new FormData();
-    formData.append('file', eyeImage);
+  const handleEyeAnalysis = async () => {
+    if (!eyeImage) return;
+    setAnalyzing(true);
     
-    // Send POST request to FastAPI backend
-    const response = await fetch(`${API_BASE_URL}/analyze`, {
-    method: 'POST',
-    body: formData,
-  });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+    try {
+      const formData = new FormData();
+      formData.append('file', eyeImage);
+      
+      const response = await fetch(`${API_BASE_URL}/analyze`, {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const result = await response.json();
+      const analysisText = formatAnalysisResult(result);
+      setEyeAnalysis(analysisText);
+      
+    } catch (error) {
+      console.error('Analysis error:', error);
+      setEyeAnalysis('Failed to analyze image. Please ensure the backend server is running on port 5004.');
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+
+  const formatAnalysisResult = (result: any) => {
+    if (!result.success) {
+      return 'Analysis failed. Please try with a clearer eye image.';
     }
     
-    const result = await response.json();
+    const { arcus_detected, arcus_severity, cholesterol_risk, confidence, details } = result;
     
-    // Format the analysis result for display
-    const analysisText = formatAnalysisResult(result);
-    setEyeAnalysis(analysisText);
-    
-  } catch (error) {
-    console.error('Analysis error:', error);
-    setEyeAnalysis('Failed to analyze image. Please ensure the backend server is running on port 5004.');
-  } finally {
-    setAnalyzing(false);
-  }
-};
-
-// Helper function to format the API response
-const formatAnalysisResult = (result) => {
-  if (!result.success) {
-    return 'Analysis failed. Please try with a clearer eye image.';
-  }
-  
-  const { arcus_detected, arcus_severity, cholesterol_risk, confidence, details } = result;
-  
-  return `
+    return `
 🔍 Eye Analysis Complete
+
 
 Status: ${arcus_detected ? '✅ Corneal Arcus Detected' : '❌ No Arcus Detected'}
 Severity: ${arcus_severity.toUpperCase()}
 Cholesterol Risk: ${cholesterol_risk.replace('_', ' ').toUpperCase()}
 Confidence: ${(confidence * 100).toFixed(1)}%
+
 
 📊 Technical Details:
 • Ring Intensity: ${details.mean_ring_intensity}
@@ -99,14 +211,29 @@ Confidence: ${(confidence * 100).toFixed(1)}%
 • Bright Segments: ${details.segments_bright}/12
 • Iris Radius: ${details.iris_radius} pixels
 
+
 ⚠️ Important: This is a visual screening tool only and not a medical diagnosis. Please consult a healthcare professional for proper evaluation.
-  `.trim();
-};
+    `.trim();
+  };
+
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500">
+      {/* Supabase Connection Status */}
+      {supabaseConnected && latestHealthData && (
+        <div className="bg-green-50 border-2 border-green-100 p-4 rounded-2xl flex items-center gap-3">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+          <span className="text-sm font-bold text-green-700">
+            Live data connected • Last update: {new Date(latestHealthData.created_at).toLocaleTimeString()}
+          </span>
+        </div>
+      )}
+
+
       {/* Service Error & CORS Helper */}
-      {!simulationMode && backendStatus && !backendStatus.ok && (
+      {backendStatus && !backendStatus.ok && (
+
+
         <div className="space-y-4 animate-in slide-in-from-top-4">
           <div className="bg-red-50 border-2 border-red-100 p-6 rounded-[2rem] flex flex-col md:flex-row items-start md:items-center gap-6 shadow-sm">
             <div className="p-4 bg-red-100 text-red-600 rounded-2xl shrink-0">
@@ -125,10 +252,7 @@ Confidence: ${(confidence * 100).toFixed(1)}%
                   <Terminal size={14} />
                   {showDebug ? 'Hide Fix' : 'Show Quick Fix'}
                 </button>
-                <div className="flex items-center gap-2 px-3 py-2 bg-white/50 rounded-xl border border-red-200 text-xs font-bold text-red-800">
-                   <Info size={14} />
-                   Try Simulation Mode in header
-                </div>
+                
               </div>
             </div>
             <div className="hidden lg:block text-right">
@@ -136,6 +260,7 @@ Confidence: ${(confidence * 100).toFixed(1)}%
               <code className="text-[10px] text-red-500 bg-red-100/50 px-2 py-1 rounded">{backendStatus.rawError}</code>
             </div>
           </div>
+
 
           {showDebug && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in zoom-in-95 duration-300">
@@ -149,6 +274,7 @@ Confidence: ${(confidence * 100).toFixed(1)}%
 const cors = require('cors');
 const app = express();
 
+
 // 2. Add this BEFORE routes
 app.use(cors());`}
                 </pre>
@@ -160,6 +286,7 @@ app.use(cors());`}
                 </div>
                 <pre className="text-[11px] text-green-400 font-mono bg-black/40 p-4 rounded-xl overflow-x-auto">
 {`from fastapi.middleware.cors import CORSMiddleware
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -174,42 +301,78 @@ app.add_middleware(
         </div>
       )}
 
+
       {/* Welcome Section */}
       <section className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h2 className="text-4xl font-black text-slate-900 tracking-tight">Patient Console</h2>
           <p className="text-slate-500 font-medium text-lg">Real-time health insights via CardiaX.</p>
         </div>
-        
       </section>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {[
-          { label: 'Heart Rate', val: latest?.heartRate || '72', unit: 'bpm', icon: Activity, color: 'text-rose-500', bg: 'bg-rose-50', trend: 'up' },
-          { label: 'Est. BP', val: latest ? `${latest.bloodPressure.systolic}/${latest.bloodPressure.diastolic}` : '120/80', unit: 'mmHg', icon: Droplets, color: 'text-blue-500', bg: 'bg-blue-50', trend: 'down' },
-          { label: 'HRV', val: latest?.hrv || '64', unit: 'ms', icon: Zap, color: 'text-amber-500', bg: 'bg-amber-50', trend: 'up' },
-          { label: 'Oxygen', val: '98', unit: '%', icon: Wind, color: 'text-teal-500', bg: 'bg-teal-50', trend: 'stable' },
-        ].map((stat, i) => (
-          <div key={i} className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 group">
-            <div className="flex justify-between items-start mb-8">
-              <div className={`p-5 rounded-3xl ${stat.bg} ${stat.color} group-hover:scale-110 transition-transform`}>
-                <stat.icon size={32} />
-              </div>
-              <div className="flex flex-col items-end">
-                {stat.trend === 'up' && <ArrowUpRight size={24} className="text-rose-500" />}
-                {stat.trend === 'down' && <ArrowDownRight size={24} className="text-green-500" />}
-                <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest mt-1">{stat.trend}</span>
-              </div>
+
+      {/* Stats Cards - UPDATED TO USE SUPABASE DATA FOR HEART RATE AND OXYGEN ONLY */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {/* Heart Rate Card - Uses Supabase Data */}
+        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 group">
+          <div className="flex justify-between items-start mb-8">
+            <div className="p-5 rounded-3xl bg-rose-50 text-rose-500 group-hover:scale-110 transition-transform">
+              <Activity size={32} />
             </div>
-            <h3 className="text-slate-400 text-[11px] font-black uppercase tracking-widest mb-1">{stat.label}</h3>
-            <div className="flex items-baseline gap-2">
-              <span className="text-4xl font-black text-slate-900 tracking-tighter">{stat.val}</span>
-              <span className="text-sm text-slate-400 font-bold uppercase tracking-wider">{stat.unit}</span>
+            <div className="flex flex-col items-end">
+              <ArrowUpRight size={24} className="text-rose-500" />
+              <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest mt-1">up</span>
             </div>
           </div>
-        ))}
+          <h3 className="text-slate-400 text-[11px] font-black uppercase tracking-widest mb-1">Heart Rate</h3>
+          <div className="flex items-baseline gap-2">
+            <span className="text-4xl font-black text-slate-900 tracking-tighter">
+              {latestHealthData?.bpm || '72'}
+            </span>
+            <span className="text-sm text-slate-400 font-bold uppercase tracking-wider">bpm</span>
+          </div>
+        </div>
+
+        {/* Blood Pressure Card - Uses Local Data (Unchanged) */}
+        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 group">
+          <div className="flex justify-between items-start mb-8">
+            <div className="p-5 rounded-3xl bg-blue-50 text-blue-500 group-hover:scale-110 transition-transform">
+              <Droplets size={32} />
+            </div>
+            <div className="flex flex-col items-end">
+              <ArrowDownRight size={24} className="text-green-500" />
+              <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest mt-1">down</span>
+            </div>
+          </div>
+          <h3 className="text-slate-400 text-[11px] font-black uppercase tracking-widest mb-1">Est. BP</h3>
+          <div className="flex items-baseline gap-2">
+            <span className="text-4xl font-black text-slate-900 tracking-tighter">
+              {latest ? `${latest.bloodPressure.systolic}/${latest.bloodPressure.diastolic}` : '120/80'}
+            </span>
+            <span className="text-sm text-slate-400 font-bold uppercase tracking-wider">mmHg</span>
+          </div>
+        </div>
+
+        {/* Oxygen Card - Uses Supabase Data */}
+        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 group">
+          <div className="flex justify-between items-start mb-8">
+            <div className="p-5 rounded-3xl bg-teal-50 text-teal-500 group-hover:scale-110 transition-transform">
+              <Wind size={32} />
+            </div>
+            <div className="flex flex-col items-end">
+              <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest mt-1">stable</span>
+            </div>
+          </div>
+          <h3 className="text-slate-400 text-[11px] font-black uppercase tracking-widest mb-1">Oxygen</h3>
+          <div className="flex items-baseline gap-2">
+            <span className="text-4xl font-black text-slate-900 tracking-tighter">
+              {latestHealthData?.spo2 || '98'}
+            </span>
+            <span className="text-sm text-slate-400 font-bold uppercase tracking-wider">%</span>
+          </div>
+        </div>
       </div>
+
 
       {/* Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -217,11 +380,13 @@ app.add_middleware(
           <div className="flex items-center justify-between mb-12">
             <div className="space-y-1">
               <h3 className="text-2xl font-black text-slate-900 tracking-tight">Vitals Timeline</h3>
-              <p className="text-sm text-slate-400 font-medium">Cardiovascular micro-fluctuation history</p>
+              <p className="text-sm text-slate-400 font-medium">
+                {supabaseConnected ? 'Live MAX30102 sensor data' : 'Cardiovascular micro-fluctuation history'}
+              </p>
             </div>
             <div className="flex items-center gap-3 text-xs font-bold text-slate-500 bg-slate-50 px-5 py-3 rounded-2xl border border-slate-100 shadow-sm">
-              <Clock size={16} className="text-blue-500" />
-              {simulationMode ? 'Simulated Data' : 'Live Stream'}
+              <Clock size={16} className={supabaseConnected ? "text-green-500" : "text-blue-500"} />
+              {supabaseConnected ? 'Live Supabase Data' : 'Local Data'}
             </div>
           </div>
           <div className="h-80">
@@ -232,6 +397,10 @@ app.add_middleware(
                     <stop offset="5%" stopColor="#ef4444" stopOpacity={0.2}/>
                     <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
                   </linearGradient>
+                  <linearGradient id="colorOxygen" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#14b8a6" stopOpacity={0.2}/>
+                    <stop offset="95%" stopColor="#14b8a6" stopOpacity={0}/>
+                  </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                 <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10, fontWeight: 800}} dy={15} />
@@ -241,11 +410,16 @@ app.add_middleware(
                   contentStyle={{ borderRadius: '24px', border: 'none', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.15)', fontWeight: 800, padding: '16px' }}
                 />
                 <Area type="monotone" dataKey="heartRate" stroke="#ef4444" strokeWidth={5} fillOpacity={1} fill="url(#colorHeart)" animationDuration={2000} />
+                {healthHistory.length > 0 && (
+                  <Area type="monotone" dataKey="oxygen" stroke="#14b8a6" strokeWidth={3} fillOpacity={1} fill="url(#colorOxygen)" animationDuration={2000} />
+                )}
               </AreaChart>
             </ResponsiveContainer>
           </div>
         </div>
 
+
+        {/* AI Health Analysis - UNCHANGED, USES LOCAL DATA ONLY */}
         <div className="bg-slate-900 p-10 rounded-[3rem] shadow-2xl flex flex-col relative overflow-hidden group">
           <div className="absolute top-0 right-0 p-12 opacity-10 rotate-12 group-hover:rotate-45 transition-transform duration-1000">
              <ShieldCheck size={160} className="text-white" />
@@ -281,12 +455,13 @@ app.add_middleware(
             )}
           </div>
 
+
           <button className="w-full mt-10 py-5 bg-white text-slate-900 font-black rounded-[1.5rem] hover:bg-blue-50 transition-all relative z-10 shadow-2xl hover:scale-[1.02] active:scale-95">
             Full Wellness Report
           </button>
         </div>
       </div>
-      
+
 
       {/* Eye Analysis Section */}
       <div className="bg-white p-10 rounded-[3rem] border border-slate-200 shadow-sm">
@@ -340,11 +515,9 @@ app.add_middleware(
           )}
         </div>
       </div>
-      
-    
-      
     </div>
   );
 };
+
 
 export default Dashboard;

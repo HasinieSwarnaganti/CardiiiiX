@@ -2,14 +2,12 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Camera, RefreshCw, Activity, ShieldCheck, Loader2, Heart, AlertTriangle, CheckCircle, Wifi, WifiOff, Cpu, Info, FileText, Share2, Printer, Zap, XCircle, Database, Cloud } from 'lucide-react';
 import { localServices, ServiceStatus } from '../services/localServices';
-import { geminiService } from '../services/geminiService';
+import { groqService } from '../services/groqService';
 import { VitalScanResult } from '../types';
 
-interface VitalScanProps {
-  simulationMode?: boolean;
-}
 
-const VitalScan: React.FC<VitalScanProps> = ({ simulationMode = false }) => {
+
+const VitalScan: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -28,12 +26,12 @@ const VitalScan: React.FC<VitalScanProps> = ({ simulationMode = false }) => {
   // Health check decoupled from camera start
   const performCheck = useCallback(async () => {
     try {
-      const status = await localServices.checkHealth(simulationMode, useProxy);
+      const status = await localServices.checkHealth( useProxy);
       if (isMounted.current) setServiceStatus(status);
     } catch (e) {
       console.error("Health check failed", e);
     }
-  }, [simulationMode, useProxy]);
+  }, [ useProxy]);
 
   // Initial Camera Setup - Stabilized to prevent loops
   useEffect(() => {
@@ -74,132 +72,171 @@ const VitalScan: React.FC<VitalScanProps> = ({ simulationMode = false }) => {
   };
 
   const processRecording = async (capturedChunks: Blob[]) => {
-    if (isProcessing) return;
-    setIsProcessing(true);
-    setError(null);
+  if (isProcessing) return;
+  setIsProcessing(true);
+  setError(null);
+  
+  try {
+    const blob = new Blob(capturedChunks, { type: 'video/webm' });
+    if (blob.size === 0) throw new Error("No video data captured. Please hold still.");
     
-    try {
-      let rppgData;
-      
-      if (simulationMode) {
-        rppgData = await localServices.analyzeVideo(new Blob(), true);
-      } else {
-        const blob = new Blob(capturedChunks, { type: 'video/webm' });
-        if (blob.size === 0) throw new Error("No video data captured. Please hold still.");
-        // Pass useProxy flag to analysis service
-        rppgData = await localServices.analyzeVideo(blob, false, useProxy);
-      }
+    // Upload video to Python backend
+    const formData = new FormData();
+    formData.append('file', blob, 'recording.webm');
+    
+    const response = await fetch('http://localhost:8001/analyze', {
+      method: 'POST',
+      body: formData,
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Server error: ${response.status}`);
+    }
+    
+    const rppgData = await response.json();
+    
+    if (!rppgData.success) {
+      throw new Error(rppgData.error || "Analysis failed");
+    }
+    
+    // Get AI interpretation (optional - can keep your existing Groq logic)
+    let aiText = `### REPORT_STATUS: ${rppgData.heart_rate > 100 ? 'ELEVATED' : 'STABLE'}\n\n**Summary:** Heart rate analysis completed with ${rppgData.quality} signal quality (${rppgData.confidence}% confidence).\n\n**Clinical Findings:**\n* [BPM: ${Math.round(rppgData.heart_rate)}] - ${rppgData.quality} quality detection\n* [BP: ${rppgData.blood_pressure.systolic}/${rppgData.blood_pressure.diastolic}] - Estimated values\n* [HRV: ${rppgData.hrv}] - Heart rate variability\n\n**AI Verdict:** Analysis based on ${rppgData.duration_seconds.toFixed(1)}s video with ${rppgData.face_frames}/${rppgData.frames_processed} frames detected.`;
+    
+    const scanResult: VitalScanResult = {
+      heartRate: Math.round(rppgData.heart_rate),
+      hrv: rppgData.hrv,
+      bloodPressure: {
+        systolic: rppgData.blood_pressure.systolic,
+        diastolic: rppgData.blood_pressure.diastolic
+      },
+      stressLevel: rppgData.stress_index > 50 ? 'High' : 'Normal',
+      timestamp: new Date().toISOString(),
+      aiInterpretation: aiText
+    };
 
-      if (!rppgData || typeof rppgData.heart_rate === 'undefined') {
-        throw new Error("The diagnostic engine could not extract a pulse from this video.");
-      }
+    if (isMounted.current) {
+      setResult(scanResult);
+      const saved = await localServices.saveScanResult(scanResult);
+      setStorageStatus(saved ? 'cloud' : 'local');
+    }
+
+  } catch (err: any) {
+    console.error("Analysis Error:", err);
+    if (isMounted.current) {
+      setError(err.message || "Failed to analyze video");
+    }
+  } finally {
+    if (isMounted.current) setIsProcessing(false);
+  }
+};
+
+const startRecording = () => {
+  if (isRecording || isProcessing) return;
+  
+  console.log("🎥 Starting 30s recording...");
+  setError(null);
+  setResult(null);
+  chunksRef.current = [];
+  setRecordingTime(0);
+  setIsRecording(true);
+
+  const startTime = Date.now();
+  
+  // ✅ SINGLE TIMER for BOTH display AND auto-stop
+  const timerId = window.setInterval(() => {
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    setRecordingTime(elapsed);
+    
+    // ✅ Auto-stop at EXACTLY 30 seconds
+    if (elapsed >= 30) {
+      console.log("⏰ 30s reached - FORCE STOP");
+      clearInterval(timerId);
+      forceStopRecording(); // Use force stop to break loops
+      return;
+    }
+  }, 1000);
+
+  // Store timer ID properly
+  timerRef.current = timerId;
+
+  if (videoRef.current?.srcObject) {
+    try {
+      const stream = videoRef.current.srcObject as MediaStream;
+      let mimeType = 'video/webm;codecs=vp8';
+      if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm';
       
-      let aiText = "";
-      try {
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error("AI Timeout")), 8000)
-        );
-        aiText = await Promise.race([
-          geminiService.interpretVitals(rppgData),
-          timeoutPromise
-        ]) as string;
-      } catch (e) {
-        const hr = Math.round(rppgData.heart_rate);
-        aiText = `### REPORT_STATUS: ${hr > 100 ? 'ELEVATED' : 'STABLE'}\n\n**Summary:** Signals processed via local engine fallback.\n\n**Clinical Findings:**\n* [BPM: ${hr}] - Normal rhythm detected.\n* [BP: ${rppgData.blood_pressure?.systolic || 120}/${rppgData.blood_pressure?.diastolic || 80}] - Estimated values.\n\n**AI Verdict:** Data captured and stored in local history.`;
-      }
+      const recorder = new MediaRecorder(stream, { 
+        mimeType,
+        videoBitsPerSecond: 2500000 // Limit bitrate to prevent huge files
+      });
       
-      const scanResult: VitalScanResult = {
-        heartRate: Math.round(rppgData.heart_rate),
-        hrv: Math.round(rppgData.hrv || 45),
-        bloodPressure: {
-          systolic: Math.round(rppgData.blood_pressure?.systolic || 120),
-          diastolic: Math.round(rppgData.blood_pressure?.diastolic || 80)
-        },
-        stressLevel: (rppgData.stress_index || 0) > 50 ? 'High' : 'Normal',
-        timestamp: new Date().toISOString(),
-        aiInterpretation: aiText
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunksRef.current.push(e.data);
+        }
+      };
+      
+      recorder.onstop = () => {
+        console.log(`✅ Recording stopped. Chunks: ${chunksRef.current.length}`);
+        // ✅ Process with slight delay to ensure all chunks collected
+        setTimeout(() => processRecording(chunksRef.current), 100);
       };
 
-      if (isMounted.current) {
-        setResult(scanResult);
-        const saved = await localServices.saveScanResult(scanResult, simulationMode);
-        setStorageStatus(saved ? (simulationMode ? 'local' : 'cloud') : 'local');
-      }
+      recorder.onerror = (e) => {
+        console.error("❌ MediaRecorder error:", e);
+        forceStopRecording();
+      };
 
-    } catch (err: any) {
-      console.error("Analysis Error:", err);
-      if (isMounted.current) {
-        // Detailed error for CORS/Backend issues
-        const errorMsg = err.message.includes('Failed to fetch') 
-          ? "Network Error: Cannot connect to rPPG server on Port 8001. Check CORS or use Simulation Mode."
-          : err.message;
-        setError(errorMsg);
-      }
-    } finally {
-      if (isMounted.current) setIsProcessing(false);
+      console.log("🚀 Starting MediaRecorder...");
+      recorder.start(1000);
+      mediaRecorderRef.current = recorder;
+      
+    } catch (e) {
+      console.error("❌ Recording setup failed:", e);
+      setError("Recording failed. Check camera permissions.");
+      forceStopRecording();
     }
-  };
+  }
+};
 
-  const stopRecording = () => {
-    if (!isRecording) return;
-    setIsRecording(false);
-    
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    } else {
-      processRecording(chunksRef.current);
-    }
-  };
-
-  const startRecording = () => {
-    if (isRecording || isProcessing) return;
-    
-    setError(null);
-    setResult(null);
-    chunksRef.current = [];
-    setRecordingTime(0);
-    setIsRecording(true);
-
-    const startTime = Date.now();
-    timerRef.current = window.setInterval(() => {
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      setRecordingTime(elapsed);
-      if (elapsed >= 15) {
-        stopRecording();
+// ✅ NEW FORCE STOP FUNCTION - Kills everything
+const forceStopRecording = useCallback(() => {
+  console.log("🔴 FORCE STOPPING ALL RECORDING");
+  
+  setIsRecording(false);
+  setRecordingTime(0);
+  
+  // Clear ALL timers
+  if (timerRef.current) {
+    clearInterval(timerRef.current);
+    timerRef.current = null;
+  }
+  
+  // Stop MediaRecorder
+  if (mediaRecorderRef.current) {
+    try {
+      if (mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
       }
-    }, 1000);
-
-    if (!simulationMode && videoRef.current?.srcObject) {
-      try {
-        const stream = videoRef.current.srcObject as MediaStream;
-        // Try multiple codecs for compatibility
-        let mimeType = 'video/webm;codecs=vp8';
-        if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm';
-        
-        const recorder = new MediaRecorder(stream, { mimeType });
-        
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) chunksRef.current.push(e.data);
-        };
-        
-        recorder.onstop = () => {
-          processRecording(chunksRef.current);
-        };
-
-        recorder.start(1000); // chunk every second
-        mediaRecorderRef.current = recorder;
-      } catch (e) {
-        setError("Recording engine failed. Please try Simulation Mode.");
-        setIsRecording(false);
-        if (timerRef.current) clearInterval(timerRef.current);
-      }
+    } catch (e) {
+      console.log("MediaRecorder already stopped");
     }
-  };
+    mediaRecorderRef.current = null;
+  }
+  
+  // Process chunks if we have any
+  if (chunksRef.current.length > 0) {
+    setTimeout(() => processRecording(chunksRef.current), 200);
+  }
+}, []);
+
+// ✅ Replace your old stopRecording with this
+const stopRecording = useCallback(() => {
+  if (!isRecording) return;
+  forceStopRecording();
+}, [isRecording, forceStopRecording]);
+
+
 
   const renderClinicalReport = (text: string) => {
     if (!text) return null;
@@ -268,9 +305,9 @@ const VitalScan: React.FC<VitalScanProps> = ({ simulationMode = false }) => {
             {useProxy ? 'Proxy Active' : 'Enable Proxy'}
             <Zap size={12} className={useProxy ? 'animate-pulse' : ''} />
           </button>
-          <div className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl border text-[11px] font-black uppercase tracking-widest shadow-sm ${simulationMode ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
-            {simulationMode ? <Cpu size={14} className="animate-pulse" /> : <Wifi size={14} />}
-            {simulationMode ? 'Simulation' : 'Live Mode'}
+          <div className={`flex items-center gap-3 px-5 py-2.5 rounded-2xl border text-[11px] font-black uppercase tracking-widest shadow-sm ${ 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+            {<Wifi size={14} />}
+            {'Live Mode'}
           </div>
         </div>
       </div>
@@ -350,7 +387,7 @@ const VitalScan: React.FC<VitalScanProps> = ({ simulationMode = false }) => {
                   <p className="text-[10px] text-slate-500 leading-relaxed font-bold bg-slate-50 p-4 rounded-2xl border border-slate-100">{error}</p>
                   <div className="flex flex-col gap-2 w-full pt-4">
                     <button onClick={() => {setError(null); startCamera();}} className="w-full py-3 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-xl">Retry Live</button>
-                    {!simulationMode && (
+                    {(
                       <button onClick={() => { window.location.reload(); }} className="w-full py-3 bg-amber-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-xl">Enable Simulation Mode</button>
                     )}
                   </div>

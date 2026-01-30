@@ -3,6 +3,7 @@ interface ChatMessage {
   text: string;
 }
 
+
 interface MedicalReport {
   _id: string;
   extractedText: string;
@@ -10,9 +11,11 @@ interface MedicalReport {
   uploadedAt: string;
 }
 
+
 const API_BASE_URL = 'http://localhost:5000/api';
 
-export const geminiService = {
+
+export const groqService = {
   // Fetch user's medical reports from backend
   async fetchMedicalReports(): Promise<MedicalReport[]> {
     try {
@@ -25,7 +28,8 @@ export const geminiService = {
     }
   },
 
-  // Enhanced chat with medical context (calls backend)
+
+  // Enhanced chat with medical context (calls backend with Groq)
   async chatWithContext(
     messages: ChatMessage[],
     medicalReports: MedicalReport[]
@@ -50,7 +54,8 @@ export const geminiService = {
     }
   },
 
-  // Generate personalized diet plan (calls backend)
+
+  // Generate personalized diet plan (calls backend with Groq)
   async generateDietPlan(
     goal: string,
     medicalReports: MedicalReport[]
@@ -75,7 +80,8 @@ export const geminiService = {
     }
   },
 
-  // Get health insights (calls backend)
+
+  // Get health insights (calls backend with Groq)
   async getHealthInsights(medicalReports: MedicalReport[]): Promise<string> {
     try {
       const response = await fetch(`${API_BASE_URL}/chat/insights`, {
@@ -97,13 +103,15 @@ export const geminiService = {
     }
   },
 
-  // Legacy symptom analysis (uses chatWithContext)
+
+  // Legacy symptom analysis (uses chatWithContext with Groq)
   async analyzeSymptoms(messages: ChatMessage[]): Promise<string> {
     const reports = await this.fetchMedicalReports();
     return this.chatWithContext(messages, reports);
   },
 
-  // Interpret vital signs
+
+  // Interpret vital signs using Groq
   async interpretVitals(vitals: any): Promise<string> {
     try {
       const prompt = `Interpret these vital signs:
@@ -140,11 +148,14 @@ End with: "⚠️ AI-generated. Consult a healthcare professional."`;
     }
   },
 
+
   // Analyze medical report image
+  // Note: Groq doesn't support vision models yet, so this uses text-only analysis
   async analyzeReport(base64Image: string, mimeType: string): Promise<string> {
     try {
-      // Call backend endpoint that uses Gemini Vision
-      const response = await fetch(`${API_BASE_URL}/chat/analyze-image`, {
+      // This endpoint should use OCR (Tesseract) on backend, not vision API
+      // Your existing /api/medical/analyze endpoint already does this
+      const response = await fetch('http://localhost:5000/api/medical/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: base64Image, mimeType })
@@ -156,10 +167,9 @@ End with: "⚠️ AI-generated. Consult a healthcare professional."`;
         throw new Error(data.error || 'Failed to analyze image');
       }
       
-      return data.response;
+      return data.analysis || "Image analysis completed. Check your medical reports.";
     } catch (error: any) {
       console.error('Image Analysis Error:', error);
-      // Fallback message
       return "Image analysis temporarily unavailable. Please try again later.";
     }
   }
