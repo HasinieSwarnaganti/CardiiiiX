@@ -1,8 +1,9 @@
 
 import React, { useEffect, useState } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Droplets, Activity, Zap, Wind, ArrowUpRight, ArrowDownRight, Clock, ShieldCheck, WifiOff, AlertCircle, Terminal, Info, Cpu } from 'lucide-react';
+import { Droplets, Activity, Zap, Wind, ArrowUpRight, ArrowDownRight, Clock, ShieldCheck, WifiOff, AlertCircle, Terminal, Info, Cpu, Eye, Upload, Loader } from 'lucide-react';
 import { localServices, ServiceStatus } from '../services/localServices';
+import { geminiService } from '../services/geminiService';
 
 interface DashboardProps {
   simulationMode?: boolean;
@@ -12,6 +13,9 @@ const Dashboard: React.FC<DashboardProps> = ({ simulationMode = false }) => {
   const [history, setHistory] = useState<any[]>([]);
   const [backendStatus, setBackendStatus] = useState<ServiceStatus | null>(null);
   const [showDebug, setShowDebug] = useState(false);
+  const [eyeImage, setEyeImage] = useState<File | null>(null);
+  const [eyeAnalysis, setEyeAnalysis] = useState<string>('');
+  const [analyzing, setAnalyzing] = useState(false);
 
   useEffect(() => {
     const loadData = async () => {
@@ -36,6 +40,68 @@ const Dashboard: React.FC<DashboardProps> = ({ simulationMode = false }) => {
       ];
 
   const latest = history[history.length - 1];
+
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5004';
+  const handleEyeAnalysis = async () => {
+  if (!eyeImage) return;
+  setAnalyzing(true);
+  
+  try {
+    // Create FormData object to send file
+    const formData = new FormData();
+    formData.append('file', eyeImage);
+    
+    // Send POST request to FastAPI backend
+    const response = await fetch(`${API_BASE_URL}/analyze`, {
+    method: 'POST',
+    body: formData,
+  });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    
+    // Format the analysis result for display
+    const analysisText = formatAnalysisResult(result);
+    setEyeAnalysis(analysisText);
+    
+  } catch (error) {
+    console.error('Analysis error:', error);
+    setEyeAnalysis('Failed to analyze image. Please ensure the backend server is running on port 5004.');
+  } finally {
+    setAnalyzing(false);
+  }
+};
+
+// Helper function to format the API response
+const formatAnalysisResult = (result) => {
+  if (!result.success) {
+    return 'Analysis failed. Please try with a clearer eye image.';
+  }
+  
+  const { arcus_detected, arcus_severity, cholesterol_risk, confidence, details } = result;
+  
+  return `
+🔍 Eye Analysis Complete
+
+Status: ${arcus_detected ? '✅ Corneal Arcus Detected' : '❌ No Arcus Detected'}
+Severity: ${arcus_severity.toUpperCase()}
+Cholesterol Risk: ${cholesterol_risk.replace('_', ' ').toUpperCase()}
+Confidence: ${(confidence * 100).toFixed(1)}%
+
+📊 Technical Details:
+• Ring Intensity: ${details.mean_ring_intensity}
+• Iris Intensity: ${details.mean_iris_intensity}
+• Contrast Ratio: ${details.contrast_ratio}x
+• Uniform Pattern: ${details.is_uniform_ring ? 'Yes' : 'No'}
+• Bright Segments: ${details.segments_bright}/12
+• Iris Radius: ${details.iris_radius} pixels
+
+⚠️ Important: This is a visual screening tool only and not a medical diagnosis. Please consult a healthcare professional for proper evaluation.
+  `.trim();
+};
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500">
@@ -218,6 +284,60 @@ app.add_middleware(
           <button className="w-full mt-10 py-5 bg-white text-slate-900 font-black rounded-[1.5rem] hover:bg-blue-50 transition-all relative z-10 shadow-2xl hover:scale-[1.02] active:scale-95">
             Full Wellness Report
           </button>
+        </div>
+      </div>
+      
+
+      {/* Eye Analysis Section */}
+      <div className="bg-white p-10 rounded-[3rem] border border-slate-200 shadow-sm">
+        <div className="flex items-center gap-4 mb-8">
+          <div className="p-4 bg-blue-50 text-blue-500 rounded-3xl">
+            <Eye size={32} />
+          </div>
+          <div>
+            <h3 className="text-2xl font-black text-slate-900 tracking-tight">Eye Analysis</h3>
+            <p className="text-sm text-slate-400 font-medium">Upload an eye image for AI-powered analysis</p>
+          </div>
+        </div>
+        
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+            <label className="flex-1" htmlFor="eye-image-input">
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setEyeImage(e.target.files?.[0] || null)}
+                className="hidden"
+                id="eye-image-input"
+              />
+              <div className="w-full p-6 border-2 border-dashed border-slate-300 rounded-2xl hover:border-blue-400 transition-colors cursor-pointer bg-slate-50 hover:bg-blue-50/50">
+                <div className="flex items-center justify-center gap-4">
+                  <Upload size={24} className="text-slate-400" />
+                  <div className="text-center">
+                    <p className="text-sm font-bold text-slate-600">
+                      {eyeImage ? eyeImage.name : 'Click to upload eye image'}
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">PNG, JPG, JPEG up to 10MB</p>
+                  </div>
+                </div>
+              </div>
+            </label>
+            <button
+              onClick={handleEyeAnalysis}
+              disabled={!eyeImage || analyzing}
+              className="px-8 py-4 bg-blue-500 text-white font-bold rounded-2xl hover:bg-blue-600 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2 shadow-lg"
+            >
+              {analyzing ? <Loader size={20} className="animate-spin" /> : <Eye size={20} />}
+              {analyzing ? 'Analyzing...' : 'Analyze'}
+            </button>
+          </div>
+          
+          {eyeAnalysis && (
+            <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200">
+              <h4 className="text-lg font-bold text-slate-900 mb-4">Analysis Result</h4>
+              <p className="text-slate-700 leading-relaxed whitespace-pre-wrap">{eyeAnalysis}</p>
+            </div>
+          )}
         </div>
       </div>
       

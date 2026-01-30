@@ -1,16 +1,26 @@
-
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, Info } from 'lucide-react';
+import { Send, Bot, User, Loader2, Info, FileText, Utensils, Sparkles } from 'lucide-react';
 import { geminiService } from '../services/geminiService';
 import { Message } from '../types';
 
 const ChatAssistant: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'model', text: "Hello! I'm Vivitsu, your AI health assistant. How are you feeling today? Please describe any symptoms you're experiencing.", timestamp: new Date() }
+    { 
+      role: 'model', 
+      text: "Hello! I'm Vivitsu, your AI health assistant with access to your medical history. I can help you with:\n\n• Symptom analysis based on your reports\n• Personalized diet plans\n• Health insights and recommendations\n• General health questions\n\nHow can I assist you today?", 
+      timestamp: new Date() 
+    }
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [medicalReports, setMedicalReports] = useState<any[]>([]);
+  const [reportsLoaded, setReportsLoaded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Load medical reports on mount
+  useEffect(() => {
+    loadMedicalReports();
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -18,20 +28,35 @@ const ChatAssistant: React.FC = () => {
     }
   }, [messages, isLoading]);
 
+  const loadMedicalReports = async () => {
+    try {
+      const reports = await geminiService.fetchMedicalReports();
+      setMedicalReports(reports);
+      setReportsLoaded(true);
+      console.log(`✅ Loaded ${reports.length} medical reports for AI context`);
+    } catch (error) {
+      console.error('Error loading reports:', error);
+      setReportsLoaded(true);
+    }
+  };
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
     const userMessage: Message = { role: 'user', text: input, timestamp: new Date() };
     setMessages(prev => [...prev, userMessage]);
+    const userInput = input;
     setInput('');
     setIsLoading(true);
 
     try {
-      // Build history including current message
+      // Build chat history
       const chatHistory = messages.map(m => ({ role: m.role, text: m.text }));
-      chatHistory.push({ role: 'user', text: input });
+      chatHistory.push({ role: 'user', text: userInput });
       
-      const response = await geminiService.analyzeSymptoms(chatHistory);
+      // Call enhanced AI with medical context
+      const response = await geminiService.chatWithContext(chatHistory, medicalReports);
+      
       const botMessage: Message = { 
         role: 'model', 
         text: response || "I'm sorry, I couldn't process that. Please try again.", 
@@ -40,7 +65,78 @@ const ChatAssistant: React.FC = () => {
       setMessages(prev => [...prev, botMessage]);
     } catch (error) {
       console.error("Chat Error:", error);
-      setMessages(prev => [...prev, { role: 'model', text: "An error occurred. Please check your Gemini API key and connection.", timestamp: new Date() }]);
+      setMessages(prev => [...prev, { 
+        role: 'model', 
+        text: "An error occurred. Please check your Gemini API key and connection.", 
+        timestamp: new Date() 
+      }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const generateDietPlan = async () => {
+    if (isLoading) return;
+
+    const userMessage: Message = { 
+      role: 'user', 
+      text: "Generate a personalized diet plan for me based on my medical history", 
+      timestamp: new Date() 
+    };
+    setMessages(prev => [...prev, userMessage]);
+    setIsLoading(true);
+
+    try {
+      const response = await geminiService.generateDietPlan(
+        "General health and wellness considering medical conditions",
+        medicalReports
+      );
+      
+      const botMessage: Message = { 
+        role: 'model', 
+        text: response, 
+        timestamp: new Date() 
+      };
+      setMessages(prev => [...prev, botMessage]);
+    } catch (error) {
+      console.error("Diet Plan Error:", error);
+      setMessages(prev => [...prev, { 
+        role: 'model', 
+        text: "Failed to generate diet plan. Please try again.", 
+        timestamp: new Date() 
+      }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const getHealthInsights = async () => {
+    if (isLoading || medicalReports.length === 0) return;
+
+    const userMessage: Message = { 
+      role: 'user', 
+      text: "Analyze my medical reports and give me health insights", 
+      timestamp: new Date() 
+    };
+    setMessages(prev => [...prev, userMessage]);
+    setIsLoading(true);
+
+    try {
+      const response = await geminiService.getHealthInsights(medicalReports);
+      
+      const botMessage: Message = { 
+        role: 'model', 
+        text: response, 
+        timestamp: new Date() 
+      };
+      setMessages(prev => [...prev, botMessage]);
+    } catch (error) {
+      console.error("Insights Error:", error);
+      setMessages(prev => [...prev, { 
+        role: 'model', 
+        text: "Failed to generate insights. Please try again.", 
+        timestamp: new Date() 
+      }]);
     } finally {
       setIsLoading(false);
     }
@@ -52,13 +148,41 @@ const ChatAssistant: React.FC = () => {
       <div className="px-6 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Clinical Mode Active</span>
+          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+            Clinical Mode Active • {medicalReports.length} Reports Loaded
+          </span>
         </div>
         <div className="flex items-center gap-2 text-[10px] text-slate-400 font-bold italic">
           <Info size={12} />
           Emergency? Call 911 immediately.
         </div>
       </div>
+
+      {/* Quick Actions */}
+      {reportsLoaded && (
+        <div className="px-6 py-3 bg-white border-b border-slate-100 flex gap-2 overflow-x-auto">
+          <button
+            onClick={generateDietPlan}
+            disabled={isLoading}
+            className="px-4 py-2 bg-green-50 text-green-700 rounded-full text-xs font-bold hover:bg-green-100 transition-colors flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
+          >
+            <Utensils size={14} />
+            Get Diet Plan
+          </button>
+          <button
+            onClick={getHealthInsights}
+            disabled={isLoading || medicalReports.length === 0}
+            className="px-4 py-2 bg-blue-50 text-blue-700 rounded-full text-xs font-bold hover:bg-blue-100 transition-colors flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
+          >
+            <Sparkles size={14} />
+            Health Insights
+          </button>
+          <div className="px-4 py-2 bg-slate-50 text-slate-600 rounded-full text-xs font-bold flex items-center gap-2 whitespace-nowrap">
+            <FileText size={14} />
+            {medicalReports.length} Reports Analyzed
+          </div>
+        </div>
+      )}
 
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -92,7 +216,7 @@ const ChatAssistant: React.FC = () => {
             </div>
             <div className="bg-slate-50 rounded-[1.5rem] p-5 border border-slate-200 rounded-tl-none flex items-center gap-3">
               <Loader2 size={16} className="animate-spin text-blue-600" />
-              <span className="text-sm text-slate-500 font-black uppercase tracking-widest text-[10px]">AI is thinking...</span>
+              <span className="text-sm text-slate-500 font-black uppercase tracking-widest text-[10px]">Analyzing with medical context...</span>
             </div>
           </div>
         )}
@@ -110,7 +234,7 @@ const ChatAssistant: React.FC = () => {
                 handleSend();
               }
             }}
-            placeholder="Describe your symptoms clearly..."
+            placeholder="Ask about symptoms, diet, or health advice..."
             className="flex-1 min-h-[44px] max-h-[150px] p-3 pl-5 bg-transparent outline-none resize-none text-slate-800 font-medium"
           />
           <button
@@ -121,7 +245,6 @@ const ChatAssistant: React.FC = () => {
             <Send size={20} />
           </button>
         </div>
-       
       </div>
     </div>
   );

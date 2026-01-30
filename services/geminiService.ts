@@ -1,79 +1,166 @@
+interface ChatMessage {
+  role: 'user' | 'model';
+  text: string;
+}
 
-import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
+interface MedicalReport {
+  _id: string;
+  extractedText: string;
+  aiAnalysis: string;
+  uploadedAt: string;
+}
 
-// Initialize AI client
-const getAI = () => new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || '' });
+const API_BASE_URL = 'http://localhost:5000/api';
 
 export const geminiService = {
-  async analyzeSymptoms(messages: { role: 'user' | 'model', text: string }[]) {
-    const ai = getAI();
-    const systemInstruction = `
-      You are a professional medical assistant powered by AI. 
-      Your goal is to help users understand their symptoms and provide general health advice.
-      RULES:
-      1. ALWAYS start by saying you are an AI assistant and not a doctor.
-      2. Ask clarifying questions about symptom duration, severity, and triggers.
-      3. Suggest potential non-emergency home care if applicable.
-      4. List warning signs that require immediate medical attention.
-      5. Use professional medical terminology but explain it clearly.
-    `;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-1.5-pro',
-      contents: messages.map(m => ({
-        role: m.role,
-        parts: [{ text: m.text }]
-      })),
-      config: { systemInstruction, temperature: 0.7 }
-    });
-
-    return response.text;
+  // Fetch user's medical reports from backend
+  async fetchMedicalReports(): Promise<MedicalReport[]> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/medical/reports`);
+      const data = await response.json();
+      return data.reports || [];
+    } catch (error) {
+      console.error('Error fetching reports:', error);
+      return [];
+    }
   },
 
-  async interpretVitals(vitals: any) {
-    const ai = getAI();
-    const prompt = `
-      As a medical AI, interpret these rPPG vital signs precisely:
-      - Heart Rate: ${vitals.heart_rate || vitals.heartRate} bpm
-      - HRV: ${vitals.hrv} ms
-      - Blood Pressure: ${vitals.blood_pressure?.systolic || vitals.bloodPressure?.systolic}/${vitals.blood_pressure?.diastolic || vitals.bloodPressure?.diastolic} mmHg
+  // Enhanced chat with medical context (calls backend)
+  async chatWithContext(
+    messages: ChatMessage[],
+    medicalReports: MedicalReport[]
+  ): Promise<string> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/chat/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages, medicalReports })
+      });
       
-      CRITICAL: Use these TAGS for metrics: [BPM: value], [BP: value], [HRV: value].
+      const data = await response.json();
       
-      FORMAT:
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to get AI response');
+      }
       
-      ### [REPORT_STATUS] (OPTIMAL | STABLE | ATTENTION)
-      
-      **Summary:** [1 sentence]
-      
-      **Clinical Findings:**
-      *   [BPM: value] - [Interpretation]
-      *   [BP: value] - [Interpretation]
-      *   [HRV: value] - [Interpretation]
-      
-      **Clinical Recommendations:**
-      *   [Action 1]
-      *   [Action 2]
-      
-      **AI Verdict:** [Final 10-word summary]
-    `;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-1.5-pro',
-      contents: [{ parts: [{ text: prompt }] }],
-      config: { temperature: 0.2 }
-    });
-
-    return response.text;
+      return data.response;
+    } catch (error: any) {
+      console.error('Chat Error:', error);
+      throw new Error(error.message || 'Failed to get AI response');
+    }
   },
 
-  async analyzeReport(base64Image: string, mimeType: string) {
-    const ai = getAI();
-    const prompt = `Analyze this medical report image. Identify type, summarize findings, highlight outliers.`;
-    const response = await ai.models.generateContent({
-      model: 'gemini-1.5-pro',
-      contents: [{ role: 'user', parts: [{ inlineData: { data: base64Image, mimeType } }, { text: prompt }] }]
-    });
-    return response.text;
+  // Generate personalized diet plan (calls backend)
+  async generateDietPlan(
+    goal: string,
+    medicalReports: MedicalReport[]
+  ): Promise<string> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/chat/diet-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal, medicalReports })
+      });
+      
+      const data = await response.json();
+      
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to generate diet plan');
+      }
+      
+      return data.response;
+    } catch (error: any) {
+      console.error('Diet Plan Error:', error);
+      throw new Error(error.message || 'Failed to generate diet plan');
+    }
+  },
+
+  // Get health insights (calls backend)
+  async getHealthInsights(medicalReports: MedicalReport[]): Promise<string> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/chat/insights`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ medicalReports })
+      });
+      
+      const data = await response.json();
+      
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to generate insights');
+      }
+      
+      return data.response;
+    } catch (error: any) {
+      console.error('Insights Error:', error);
+      throw new Error(error.message || 'Failed to generate insights');
+    }
+  },
+
+  // Legacy symptom analysis (uses chatWithContext)
+  async analyzeSymptoms(messages: ChatMessage[]): Promise<string> {
+    const reports = await this.fetchMedicalReports();
+    return this.chatWithContext(messages, reports);
+  },
+
+  // Interpret vital signs
+  async interpretVitals(vitals: any): Promise<string> {
+    try {
+      const prompt = `Interpret these vital signs:
+- Heart Rate: ${vitals.heart_rate || vitals.heartRate} bpm
+- HRV: ${vitals.hrv} ms
+- Blood Pressure: ${vitals.blood_pressure?.systolic || vitals.bloodPressure?.systolic}/${vitals.blood_pressure?.diastolic || vitals.bloodPressure?.diastolic} mmHg
+
+Provide:
+- Status (OPTIMAL/STABLE/ATTENTION)
+- Clinical findings for each metric
+- Recommendations
+
+End with: "⚠️ AI-generated. Consult a healthcare professional."`;
+
+      const response = await fetch(`${API_BASE_URL}/chat/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          messages: [{ role: 'user', text: prompt }],
+          medicalReports: []
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to interpret vitals');
+      }
+      
+      return data.response;
+    } catch (error: any) {
+      console.error('Vitals Error:', error);
+      throw new Error('Failed to interpret vitals');
+    }
+  },
+
+  // Analyze medical report image
+  async analyzeReport(base64Image: string, mimeType: string): Promise<string> {
+    try {
+      // Call backend endpoint that uses Gemini Vision
+      const response = await fetch(`${API_BASE_URL}/chat/analyze-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: base64Image, mimeType })
+      });
+      
+      const data = await response.json();
+      
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to analyze image');
+      }
+      
+      return data.response;
+    } catch (error: any) {
+      console.error('Image Analysis Error:', error);
+      // Fallback message
+      return "Image analysis temporarily unavailable. Please try again later.";
+    }
   }
 };
