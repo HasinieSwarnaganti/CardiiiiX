@@ -2,7 +2,7 @@
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 
 // Initialize AI client
-const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+const getAI = () => new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || '' });
 
 export const geminiService = {
   async analyzeSymptoms(messages: { role: 'user' | 'model', text: string }[]) {
@@ -19,7 +19,7 @@ export const geminiService = {
     `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
+      model: 'gemini-1.5-pro',
       contents: messages.map(m => ({
         role: m.role,
         parts: [{ text: m.text }]
@@ -59,7 +59,7 @@ export const geminiService = {
     `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
+      model: 'gemini-1.5-pro',
       contents: [{ parts: [{ text: prompt }] }],
       config: { temperature: 0.2 }
     });
@@ -71,8 +71,8 @@ export const geminiService = {
     const ai = getAI();
     const prompt = `Analyze this medical report image. Identify type, summarize findings, highlight outliers.`;
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: { parts: [{ inlineData: { data: base64Image, mimeType } }, { text: prompt }] }
+      model: 'gemini-1.5-pro',
+      contents: [{ role: 'user', parts: [{ inlineData: { data: base64Image, mimeType } }, { text: prompt }] }]
     });
     return response.text;
   }
